@@ -1,0 +1,321 @@
+# ========================================
+# Oh My Zsh 基础配置
+# ========================================
+export ZSH="$HOME/.oh-my-zsh"
+ZSH_THEME="robbyrussell"
+plugins=(git z)
+source $ZSH/oh-my-zsh.sh
+
+# ========================================
+# 插件配置
+# ========================================
+if [[ -f /opt/homebrew/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh ]]; then
+    source /opt/homebrew/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh
+fi
+
+# ========================================
+# PATH 配置（统一管理，避免重复）
+# ========================================
+typeset -U path  # 自动去重
+path=(
+    "$HOME/.catpawai/bin"
+    "$HOME/bin"
+    "$HOME/.local/bin"
+    /usr/local/bin
+    $path
+)
+# ========================================
+# Java 环境配置（使用系统 java_home 管理）
+# ========================================
+
+# 使用系统提供的 java_home 工具来管理 Java 版本
+export JAVA_HOME=$(/usr/libexec/java_home)
+
+# Java 版本快速切换函数
+jdk() {
+    if [[ -z "$1" ]]; then
+        echo "Usage: jdk <version>"
+        echo "Example: jdk 25 | jdk 21 | jdk 17 | jdk 8"
+        echo ""
+        echo "Available versions:"
+        jdk --list
+        return 1
+    fi
+    
+    # 特殊参数：列出所有已安装的 JDK
+    if [[ "$1" == "--list" || "$1" == "-l" ]]; then
+        echo "Installed Java versions:"
+        /usr/libexec/java_home -V 2>/dev/null | while read line; do
+            if [[ "$line" =~ "^[[:space:]]*\d+\)" ]]; then
+                # 提取版本信息
+                local version=$(echo "$line" | sed -n 's/.*"\(.*\)"$/\1/p')
+                local path=$(echo "$line" | sed -n 's/.*\] \(.*\)$/\1/p')
+                
+                # 检查是否是当前版本
+                local current=""
+                if [[ "$path" == "${JAVA_HOME}" ]]; then
+                    current=" (current)"
+                fi
+                
+                # 提取主要版本号
+                local major_version=$(echo "$version" | cut -d. -f1)
+                # 处理 Java 8 的特殊情况
+                if [[ "$major_version" == "1" ]]; then
+                    major_version="8"
+                fi
+                
+                echo "  ✔ $major_version - $version$current"
+                echo "    Path: $path"
+            fi
+        done
+        return 0
+    fi
+    
+    # 尝试切换到指定版本
+    local target_version="$1"
+    local new_java_home
+    
+    # 处理 Java 8 的特殊情况
+    local search_version="$target_version"
+    if [[ "$target_version" == "8" ]]; then
+        search_version="1.8"
+    fi
+    
+    # 使用 java_home 工具查找指定版本
+    new_java_home=$(/usr/libexec/java_home -v "$search_version" 2>/dev/null)
+    
+    if [[ -z "$new_java_home" ]]; then
+        echo "⚠️  Java $target_version not found"
+        echo ""
+        echo "Available versions:"
+        jdk --list
+        return 1
+    fi
+    
+    # 设置新的 JAVA_HOME
+    export JAVA_HOME="$new_java_home"
+    
+    # 更新 PATH - 移除旧的 Java 路径并添加新的
+    local new_path=()
+    for p in $path; do
+        if [[ "$p" != */bin ]]; then
+            new_path+=("$p")
+        else
+            # 检查是否是 Java bin 路径
+            local parent_dir=$(dirname "$p")
+            if [[ "$parent_dir" != */Contents/Home ]]; then
+                new_path+=("$p")
+            fi
+        fi
+    done
+    path=($new_path)
+    
+    # 添加新的 Java bin 路径
+    path=("$JAVA_HOME/bin" $path)
+    
+    # 清空命令哈希表
+    rehash
+    
+    echo "✔ Switched to Java $target_version"
+    echo "JAVA_HOME: $JAVA_HOME"
+    echo ""
+    java -version 2>&1 | head -n 3
+}
+# ========================================
+# Maven 配置（智能检测 Java 版本）
+# ========================================
+
+# 根据 Java 版本智能设置 MAVEN_OPTS
+if [[ -n "$JAVA_HOME" ]]; then
+    # 检查 java 命令是否存在
+    if [[ -x "$JAVA_HOME/bin/java" ]]; then
+        # 获取 Java 版本
+        local java_version_output=$("$JAVA_HOME/bin/java" -version 2>&1)
+        local first_line=$(echo "$java_version_output" | head -n 1)
+        
+        # 使用 awk 提取引号中的版本号
+        local java_version=$(echo "$first_line" | awk -F'"' '{print $2}')
+        
+        if [[ -n "$java_version" ]]; then
+            # 提取主要版本号
+            local major_version=""
+            
+            # 处理 Java 8 格式 (如: 1.8.0_472)
+            if [[ "$java_version" =~ ^1\.([0-9])\. ]]; then
+                major_version="8"
+            # 处理 Java 9+ 格式 (如: 11.0.21, 17.0.17, 21.0.9, 25.0.1)
+            elif [[ "$java_version" =~ ^([0-9]+)\. ]]; then
+                major_version="${BASH_REMATCH[1]}"
+            else
+                # 使用 cut 作为备用方法
+                major_version=$(echo "$java_version" | cut -d. -f1)
+            fi
+            
+            # 检查是否是 Java 9+ (Java 9 开始支持模块系统)
+            if [[ "$major_version" -ge 9 ]] 2>/dev/null; then
+                export MAVEN_OPTS="--add-opens java.base/java.util=ALL-UNNAMED"
+            else
+                export MAVEN_OPTS=""
+            fi
+        else
+            export MAVEN_OPTS=""
+        fi
+    else
+        export MAVEN_OPTS=""
+    fi
+else
+    export MAVEN_OPTS=""
+fi
+
+# ========================================
+# 函数库
+# ========================================
+
+# 查看当前 Java 环境
+javainfo() {
+    echo "Current Java Configuration:"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "JAVA_HOME: ${JAVA_HOME:-Not set}"
+    
+    if command -v java &>/dev/null; then
+        echo ""
+        echo "Java version:"
+        java -version 2>&1 | head -n 3
+        echo ""
+        echo "Java location:"
+        which java
+    else
+        echo "⚠️  Java command not found in PATH"
+    fi
+    
+    echo ""
+    jdk --list
+}
+
+# 创建目录并进入
+mkcd() {
+    if [[ -z "$1" ]]; then
+        echo "Usage: mkcd <directory>"
+        return 1
+    fi
+    mkdir -p "$1" && cd "$1"
+}
+
+# 查找文件
+ff() {
+    if [[ -z "$1" ]]; then
+        echo "Usage: ff <filename_pattern>"
+        return 1
+    fi
+    find . -type f -iname "*$1*" 2>/dev/null
+}
+
+# 压缩和解压
+extract() {
+    if [[ -z "$1" ]]; then
+        echo "Usage: extract <file>"
+        return 1
+    fi
+    
+    if [[ ! -f "$1" ]]; then
+        echo "❌ File not found: $1"
+        return 1
+    fi
+    
+    case "$1" in
+        *.tar.bz2) tar xjf "$1" ;;
+        *.tar.gz)  tar xzf "$1" ;;
+        *.bz2)     bunzip2 "$1" ;;
+        *.rar)     unrar x "$1" ;;
+        *.gz)      gunzip "$1" ;;
+        *.tar)     tar xf "$1" ;;
+        *.tbz2)    tar xjf "$1" ;;
+        *.tgz)     tar xzf "$1" ;;
+        *.zip)     unzip "$1" ;;
+        *.Z)       uncompress "$1" ;;
+        *.7z)      7z x "$1" ;;
+        *)         echo "❌ Unknown archive format: $1" ;;
+    esac
+}
+
+# 查看端口占用
+port() {
+    if [[ -z "$1" ]]; then
+        echo "Usage: port <port_number>"
+        return 1
+    fi
+    lsof -i :"$1"
+}
+
+# 杀死占用端口的进程
+killport() {
+    if [[ -z "$1" ]]; then
+        echo "Usage: killport <port_number>"
+        return 1
+    fi
+    local pid=$(lsof -ti:"$1")
+    if [[ -n "$pid" ]]; then
+        echo "Killing process $pid on port $1..."
+        kill -9 "$pid"
+        echo "✔ Done"
+    else
+        echo "⚠️  No process found on port $1"
+    fi
+}
+
+# ========================================
+# 性能优化
+# ========================================
+# Lazy load nvm (if installed)
+if [[ -d "$HOME/.nvm" ]]; then
+    export NVM_DIR="$HOME/.nvm"
+    
+    # 延迟加载 nvm
+    nvm() {
+        unset -f nvm node npm npx
+        [[ -s "$NVM_DIR/nvm.sh" ]] && source "$NVM_DIR/nvm.sh"
+        [[ -s "$NVM_DIR/bash_completion" ]] && source "$NVM_DIR/bash_completion"
+        nvm "$@"
+    }
+    
+    # 为常用命令创建代理
+    node() { nvm >/dev/null 2>&1; command node "$@"; }
+    npm() { nvm >/dev/null 2>&1; command npm "$@"; }
+    npx() { nvm >/dev/null 2>&1; command npx "$@"; }
+fi
+
+# ========================================
+# 历史记录优化
+# ========================================
+export HISTSIZE=50000
+export SAVEHIST=50000
+export HISTFILE="$HOME/.zsh_history"
+setopt HIST_IGNORE_DUPS       # 忽略连续重复命令
+setopt HIST_IGNORE_ALL_DUPS   # 删除旧的重复命令
+setopt HIST_SAVE_NO_DUPS      # 不保存重复命令
+setopt HIST_FIND_NO_DUPS      # 查找时不显示重复
+setopt HIST_IGNORE_SPACE      # 忽略以空格开头的命令
+setopt INC_APPEND_HISTORY     # 立即追加历史
+setopt SHARE_HISTORY          # 多终端共享历史
+setopt HIST_REDUCE_BLANKS     # 删除多余空白
+
+# ========================================
+# 其他配置
+# ========================================
+# 启用命令自动更正
+setopt CORRECT
+
+# 禁用 Ctrl+S 冻结终端
+stty -ixon
+
+# 更好的补全体验
+setopt COMPLETE_IN_WORD
+setopt AUTO_CD
+setopt AUTO_PUSHD
+setopt PUSHD_IGNORE_DUPS
+
+# ========================================
+# 环境特定配置
+# ========================================
+# 如果存在本地配置文件，则加载它
+[[ -f "$HOME/.zshrc.local" ]] && source "$HOME/.zshrc.local"
